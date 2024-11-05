@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 import streamlit as st
@@ -17,12 +18,39 @@ if 'db_session' not in st.session_state:
     st.session_state.db_session = Session()
 
 
-@st.dialog('Create New Template')
-def create_template():
-    name = st.text_input('Template Name')
-    file = st.file_uploader('Template File', type='xlsx')
-    submitted = st.button('Submit')
-    if submitted and len(name.strip()) > 0 and file is not None:
+class TemplateUI:
+    def __init__(self, template: Template) -> None:
+        self.template = template
+
+    def form(self, mode: Literal['create', 'update']) -> bool:
+        if st.session_state.get('submit_template'):
+            result, err_msg = self.validate(mode)
+            if result:
+                return True
+            st.error(f'Error: {err_msg}.')
+        st.text_input(
+            'Template Name',
+            value=self.template.name,
+            key=f'name_{self.template.id}'
+        )
+        st.file_uploader(
+            'Template File',
+            type='xlsx',
+            key=f'file_{self.template.id}'
+        )
+        st.button('Submit', key=f'submit_template')
+
+    def validate(self, mode: Literal['create', 'update']) -> tuple[bool, str | None]:
+        name = st.session_state.get(f'name_{self.template.id}')
+        if not name.strip():
+            return False, 'Template name cannot be empty'
+        session = st.session_state.db_session
+        all_templates = session.query(Template).all()
+        if name in [t.name for t in all_templates] and mode == 'create':
+            return False, f'Template "{name}" already exists'
+        file = st.session_state.get(f'file_{self.template.id}')
+        if file is None:
+            return False, 'Template file cannot be empty'
         file_path = Path(f'template/{uuid4().hex}.xlsx')
         with open(file_path, mode='wb') as f:
             f.write(file.getvalue())
@@ -33,26 +61,41 @@ def create_template():
                 tb_name: ref
                 for tb_name, ref in wb[sheet].tables.items()
             }
-        template = Template(
-            name=name,
-            file_path=str(file_path),
-            meta_data=json.dumps(meta_data)
-        )
-        st.session_state.db_session.add(template)
-        st.session_state.db_session.commit()
-        st.rerun()
-        return True
-    return False
+        self.template.name = name
+        self.template.file_path = str(file_path)
+        self.template.meta_data = json.dumps(meta_data)
+        return True, None
+
+    @staticmethod
+    @st.dialog('Create New Template')
+    def create() -> None:
+        if 'new_template' not in st.session_state:
+            st.session_state.new_template = Template(
+                name='', file_path='', meta_data=''
+            )
+        template_ui = TemplateUI(st.session_state.new_template)
+        submitted = template_ui.form(mode='create')
+        if submitted:
+            new_template = st.session_state.pop('new_template')
+            st.session_state.db_session.add(new_template)
+            st.session_state.db_session.commit()
+            st.rerun()
+
+    def retrieve(self) -> None:
+        st.write(template.name, template.file_path)
+
+    def update(self) -> None:
+        pass
 
 
 st.title('Report Template')
-if st.button('Create New Template'):
-    submitted = create_template()
-    if submitted:
-        st.toast('Created new template!')
-
-
+st.button(
+    'New Template',
+    icon=':material/add:',
+    on_click=TemplateUI.create
+)
 session = st.session_state.db_session
 templates = session.query(Template).all()
 for template in templates:
-    st.write(template.name, template.file_path)
+    template_ui = TemplateUI(template)
+    template_ui.retrieve()
